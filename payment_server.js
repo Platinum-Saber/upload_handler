@@ -1,46 +1,65 @@
 const express = require("express");
-const cors = require("cors"); // Import CORS middleware
-const multer = require("multer"); // For file handling
+const cors = require("cors");
+const multer = require("multer");
 const { google } = require("googleapis");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
 
-// Enable CORS for all origins (or specify the frontend origin)
+// Increase request size limits in Express
+app.use(express.json({ limit: "50mb" })); 
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Enable CORS
 app.use(
   cors({
-    origin: "http://localhost:3000", // Allow requests from this origin
+    origin: ["https://mun-rotaractmora.me", "http://localhost:3000"], // Allow frontend and local development
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
   })
 );
+app.options("*", cors()); // Handle preflight requests
 
-const upload = multer({ dest: "uploads/" }); // Temporary storage for uploaded files
+// Set upload size limit in Multer (50MB)
+const upload = multer({ 
+  dest: "uploads/", 
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+});
 
-// Google Drive API setup
+// Google Drive API authentication
 const auth = new google.auth.GoogleAuth({
-  keyFile: "slrmun25-d061b999f1f1.json", // Path to your service account key JSON
-  scopes: ["https://www.googleapis.com/auth/drive"], // Full Drive access
+  keyFile: "slrmun25-d061b999f1f1.json",
+  scopes: ["https://www.googleapis.com/auth/drive"],
 });
 
 const drive = google.drive({ version: "v3", auth });
 
-// Endpoint to handle file uploads
+// File upload endpoint
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
-    const email = req.body.email;
-    const filePath = req.file.path; // Temporary file path
-    const folderId = "1IVk7TzgTkOis45iAZSRvV2HFmPNY9RdO"; // Replace with the Google Drive folder ID
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded." });
+    }
 
-    // Rename the file with the user's email
+    const email = req.body.email;
+    const filePath = req.file.path;
+    const folderId = "1IVk7TzgTkOis45iAZSRvV2HFmPNY9RdO";
+
     const newFilename = `${email}-${req.file.originalname}`;
     const newPath = path.join(req.file.destination, newFilename);
 
-    fs.renameSync(filePath, newPath);
-    console.log("File renamed:", newPath);
+    // Rename file
+    try {
+      fs.renameSync(filePath, newPath);
+    } catch (err) {
+      console.error("Error renaming file:", err);
+      return res.status(500).json({ error: "File renaming failed." });
+    }
 
     const fileMetadata = {
       name: newFilename,
-      parents: [folderId], // Uploads the file to the specified folder
+      parents: [folderId],
     };
 
     const media = {
@@ -49,21 +68,36 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     };
 
     const response = await drive.files.create({
-      requestBody: fileMetadata, // Correct property for metadata
+      requestBody: fileMetadata,
       media: media,
-      fields: "id, webViewLink", // Returns the file ID and a sharable link
+      fields: "id, webViewLink",
     });
 
-    // Clean up the renamed file
-    fs.unlinkSync(newPath);
+    // Clean up renamed file
+    try {
+      fs.unlinkSync(newPath);
+    } catch (err) {
+      console.error("Error deleting file:", err);
+    }
 
-    res.status(200).json({ message: "File uploaded and renamed successfully", fileId: response.data.id });
+    res.status(200).json({
+      message: "File uploaded and renamed successfully",
+      fileId: response.data.id,
+      webViewLink: response.data.webViewLink,
+    });
   } catch (error) {
     console.error("Error uploading file:", error);
-    res.status(500).json({ error: 'Error uploading file.' });
+    
+    // Handle file size limit errors from multer
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "File size exceeds the limit of 50MB." });
+    }
+
+    res.status(500).json({ error: "Error uploading file." });
   }
 });
 
-app.listen(5000, () => {
-  console.log('Server is running on port 5000');
+// Start server
+app.listen(5000, "0.0.0.0", () => {
+  console.log("Server is running on port 5000");
 });
